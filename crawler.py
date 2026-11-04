@@ -162,5 +162,4 @@ if __name__ == '__main__':
         print("index.html 資料庫已成功更新！")
     else:
         print("過去 7 天內均未抓到交易日數據。")
-
- 
+        
