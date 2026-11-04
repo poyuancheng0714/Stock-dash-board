@@ -1,0 +1,32 @@
+name: 每日籌碼儀表板自動排程
+
+on:
+  schedule:
+    # UTC 14:30 相當於台灣時間週一至週五 22:30
+    - cron: '30 14 * * 1-5'
+  workflow_dispatch: # 支援手動一鍵點擊測試執行
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 簽出專案代碼
+        uses: actions/checkout@v4
+
+      - name: 設定 Python 環境
+        uses: setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: 安裝所需套件
+        run: pip install pandas requests
+
+      - name: 執行每日盤後抓取與數據更新
+        run: python crawler.py
+
+      - name: 提交更新後的網頁
+        run: |
+          git config --global user.name "GitHub Action Bot"
+          git config --global user.email "action@github.com"
+          git add index.html
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Auto update: $(date +'%Y-%m-%d %H:%M')" && git push)
