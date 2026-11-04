@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import re
+import time
 import pandas as pd
 import requests
 
@@ -19,32 +20,43 @@ def is_excluded(code):
     # 排除 ETF (00開頭)、金融保險 (28開頭)、特別股或權證 (非4碼)
     return len(c) != 4 or c.startswith('00') or c.startswith('28')
 
+def safe_get_json(url, headers):
+    try:
+        res = requests.get(url, headers=headers, timeout=20)
+        if res.status_code == 200 and res.text.strip().startswith('{'):
+            return res.json()
+    except Exception as e:
+        print(f"連線失敗 [{url}]: {e}")
+    return None
+
 def get_daily_data(date_str):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01'
+    }
 
-    # 1. 上市收盤價與法人
-    p_twse = requests.get(
-        f'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json',
-        headers=headers,
-        timeout=20
-    ).json()
-    i_twse = requests.get(
-        f'https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json',
-        headers=headers,
-        timeout=20
-    ).json()
-
-    # 2. 上市融資融券
-    m_twse = requests.get(
-        f'https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json',
-        headers=headers,
-        timeout=20
-    ).json()
-
-    # 若該日非交易日或資料未公佈
-    if p_twse.get('stat') != 'OK' or i_twse.get('stat') != 'OK':
-        print(f"[{date_str}] 非交易日或資料尚未公佈")
+    # 1. 上市收盤價
+    url_p = f'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json'
+    p_twse = safe_get_json(url_p, headers)
+    if not p_twse or p_twse.get('stat') != 'OK':
+        print(f"[{date_str}] 股價資料未公佈或取得失敗")
         return None
+
+    # 間隔 3 秒避免被 TWSE 判定為連續爬蟲
+    time.sleep(3)
+
+    # 2. 上市三大法人
+    url_i = f'https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json'
+    i_twse = safe_get_json(url_i, headers)
+    if not i_twse or i_twse.get('stat') != 'OK':
+        print(f"[{date_str}] 法人資料未公佈或取得失敗")
+        return None
+
+    time.sleep(3)
+
+    # 3. 上市融資融券
+    url_m = f'https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json'
+    m_twse = safe_get_json(url_m, headers)
 
     # 建立上市價格表
     df_price_twse = pd.DataFrame(
@@ -79,9 +91,10 @@ def get_daily_data(date_str):
     ).round(0)
 
     # 上市融資
-    df_m_twse = pd.DataFrame(m_twse['tables'][0]['data'])
-    df_m_twse = df_m_twse[[0, 5]].rename(columns={0: '代號', 5: '融資增減'})
-    df_m_twse['融資增減'] = df_m_twse['融資增減'].apply(clean_num)
+    df_m_twse = pd.DataFrame(columns=['代號', '融資增減'])
+    if m_twse and m_twse.get('stat') == 'OK' and 'tables' in m_twse and len(m_twse['tables']) > 0:
+        df_m_twse = pd.DataFrame(m_twse['tables'][0]['data'])[[0, 5]].rename(columns={0: '代號', 5: '融資增減'})
+        df_m_twse['融資增減'] = df_m_twse['融資增減'].apply(clean_num)
 
     # 合併上市
     twse_all = df_price_twse.merge(df_i_twse, on='代號', how='inner').merge(
@@ -126,7 +139,7 @@ if __name__ == '__main__':
     tz_tw = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tz_tw)
 
-    # 判斷查詢日期：若在下午 15:30 以前執行，當天尚未結算，自動改抓前一天（昨天）
+    # 若在下午 15:30 以前執行，當天尚未結算，自動改抓前一天
     if now_tw.hour < 15 or (now_tw.hour == 15 and now_tw.minute < 30):
         target_date = now_tw - datetime.timedelta(days=1)
     else:
@@ -193,4 +206,4 @@ if __name__ == '__main__':
             f.write(html)
         print('index.html 已成功更新完畢！')
     else:
-        print('未抓取到有效盤後數據（非交易日或資料未公佈），保持原網頁內容。')
+        print('未抓取到有效盤後數據，保持原網頁內容。')
