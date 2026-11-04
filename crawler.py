@@ -18,20 +18,23 @@ def is_excluded(code):
     # 排除 ETF (00開頭)、金融保險 (28開頭)、權證或特別股 (非4碼)
     return len(c) != 4 or c.startswith('00') or c.startswith('28')
 
-def get_daily_data(date_str):
+def fetch_twse_by_date(date_str):
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-    # 1. 上市收盤價與法人
     try:
         p_res = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json", headers=headers, timeout=15)
         p_twse = p_res.json()
         i_res = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json", headers=headers, timeout=15)
         i_twse = i_res.json()
     except Exception as e:
-        print(f"網路連線或 API 回傳異常: {e}")
+        print(f"[{date_str}] 連線異常: {e}")
         return None, False
 
-    # 2. 上市融資融券 (下午可能尚未結算，做容錯處理)
+    # 若非交易日或尚未產出
+    if p_twse.get('stat') != 'OK' or i_twse.get('stat') != 'OK':
+        return None, False
+
+    # 嘗試抓取融資融券
     has_margin = False
     df_m_twse = pd.DataFrame(columns=['代號', '融資增減'])
     try:
@@ -42,14 +45,9 @@ def get_daily_data(date_str):
             df_m_twse['融資增減'] = df_m_twse['融資增減'].apply(clean_num)
             has_margin = True
     except Exception as e:
-        print(f"融資融券尚未出爐或解析略過: {e}")
+        pass
 
-    # 若法人或價格未出爐 (非交易日或太早抓取)
-    if p_twse.get('stat') != 'OK' or i_twse.get('stat') != 'OK':
-        print("今日非交易日，或三大法人盤後資料尚未公佈")
-        return None, has_margin
-
-    # 整理上市價格表
+    # 整理股價
     df_price_twse = pd.DataFrame(p_twse['data'], columns=p_twse['fields'])[['證券代號', '證券名稱', '收盤價', '漲跌價差']].rename(
         columns={'證券代號': '代號', '證券名稱': '名稱', '漲跌價差': '價差'}
     )
@@ -58,7 +56,7 @@ def get_daily_data(date_str):
     df_price_twse['昨收'] = df_price_twse['收盤價'] - df_price_twse['價差']
     df_price_twse['漲跌幅'] = ((df_price_twse['價差'] / df_price_twse['昨收']) * 100).round(2)
 
-    # 整理法人資料
+    # 整理法人
     df_i_twse = pd.DataFrame(i_twse['data'], columns=i_twse['fields'])
     f_col = [c for c in df_i_twse.columns if '外資' in c and '買賣超' in c][0]
     t_col = [c for c in df_i_twse.columns if '投信' in c and '買賣超' in c][0]
@@ -75,8 +73,6 @@ def get_daily_data(date_str):
         twse_all['融資增減'] = 0.0
 
     twse_all = twse_all[~twse_all['代號'].apply(is_excluded)].copy()
-
-    # 計算金額 (億元)
     twse_all['外資金額'] = (twse_all['外資張數'] * 1000 * twse_all['收盤價'] / 1e8).round(2)
     twse_all['投信金額'] = (twse_all['投信張數'] * 1000 * twse_all['收盤價'] / 1e8).round(2)
     twse_all['融資金額'] = (twse_all['融資增減'] * 1000 * twse_all['收盤價'] / 1e8).round(2)
@@ -105,13 +101,27 @@ def build_top20(df, sort_col, shares_col, is_asc=False):
 if __name__ == '__main__':
     tz_tw = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tz_tw)
-    today = now_tw.strftime('%Y%m%d')
 
-    df_twse, has_margin = get_daily_data(today)
+    # 若今天尚未公佈或休市，自動往回找最近 7 天內最新的一個交易日
+    df_twse = None
+    target_date_str = ""
+    has_margin = False
+
+    for offset in range(0, 7):
+        check_date = now_tw - datetime.timedelta(days=offset)
+        d_str = check_date.strftime('%Y%m%d')
+        print(f"嘗試抓取日期：{d_str} ...")
+        df_res, margin_res = fetch_twse_by_date(d_str)
+        if df_res is not None:
+            df_twse = df_res
+            has_margin = margin_res
+            target_date_str = check_date.strftime('%Y-%m-%d')
+            print(f"成功抓取到交易日數據：{target_date_str}")
+            break
 
     if df_twse is not None:
-        status_suffix = " (盤後完整結算)" if has_margin else " (外資/投信已結算，資券結算中)"
-        update_time_str = now_tw.strftime('%Y-%m-%d %H:%M') + status_suffix
+        status_suffix = " (完整結算)" if has_margin else " (外資/投信結算，資券結算中)"
+        update_time_str = f"{target_date_str} 資料 [更新於 {now_tw.strftime('%m/%d %H:%M')}]{status_suffix}"
 
         margin_top = build_top20(df_twse[df_twse['融資金額'] > 0], '融資金額', '融資增減', False) if has_margin else []
         margin_bot = build_top20(df_twse[df_twse['融資金額'] < 0], '融資金額', '融資增減', True) if has_margin else []
@@ -149,6 +159,6 @@ if __name__ == '__main__':
 
         with open("index.html", "w", encoding="utf-8") as f:
             f.write(html)
-        print("index.html 已成功更新！")
+        print("index.html 資料庫已成功更新！")
     else:
-        print("未抓取到有效盤後數據，停止更新。")
+        print("過去 7 天內均未抓到交易日數據。")
