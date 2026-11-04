@@ -1,6 +1,7 @@
 import datetime
 import json
 import re
+import time
 import pandas as pd
 import requests
 
@@ -15,39 +16,55 @@ def clean_num(val):
 
 def is_excluded(code):
     c = str(code).strip()
-    # 排除 ETF (00開頭)、金融保險 (28開頭)、權證或特別股 (非4碼)
     return len(c) != 4 or c.startswith('00') or c.startswith('28')
 
 def fetch_twse_by_date(date_str):
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/json, text/javascript, */*; q=0.01',
+        'Accept-Language': 'zh-TW,zh;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Referer': 'https://www.twse.com.tw/zh/trading/historical/stock-day-avg.html'
+    }
 
     try:
-        p_res = requests.get(f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json", headers=headers, timeout=15)
+        # 1. 股價
+        url_p = f"https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json"
+        p_res = requests.get(url_p, headers=headers, timeout=20)
+        if p_res.status_code != 200 or not p_res.text.strip().startswith('{'):
+            return None, False
         p_twse = p_res.json()
-        i_res = requests.get(f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json", headers=headers, timeout=15)
+
+        time.sleep(2)  # 避開 TWSE 頻率限制
+
+        # 2. 三大法人
+        url_i = f"https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json"
+        i_res = requests.get(url_i, headers=headers, timeout=20)
+        if i_res.status_code != 200 or not i_res.text.strip().startswith('{'):
+            return None, False
         i_twse = i_res.json()
     except Exception as e:
-        print(f"[{date_str}] 連線異常: {e}")
+        print(f"[{date_str}] 擷取解析異常: {e}")
         return None, False
 
-    # 若非交易日或尚未產出
     if p_twse.get('stat') != 'OK' or i_twse.get('stat') != 'OK':
         return None, False
 
-    # 嘗試抓取融資融券
+    # 3. 融資融券
     has_margin = False
     df_m_twse = pd.DataFrame(columns=['代號', '融資增減'])
     try:
-        m_res = requests.get(f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json", headers=headers, timeout=15)
-        m_twse = m_res.json()
-        if m_twse.get('stat') == 'OK' and 'tables' in m_twse and len(m_twse['tables']) > 0:
-            df_m_twse = pd.DataFrame(m_twse['tables'][0]['data'])[[0, 5]].rename(columns={0: '代號', 5: '融資增減'})
-            df_m_twse['融資增減'] = df_m_twse['融資增減'].apply(clean_num)
-            has_margin = True
-    except Exception as e:
+        time.sleep(1.5)
+        url_m = f"https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json"
+        m_res = requests.get(url_m, headers=headers, timeout=20)
+        if m_res.status_code == 200 and m_res.text.strip().startswith('{'):
+            m_twse = m_res.json()
+            if m_twse.get('stat') == 'OK' and 'tables' in m_twse and len(m_twse['tables']) > 0:
+                df_m_twse = pd.DataFrame(m_twse['tables'][0]['data'])[[0, 5]].rename(columns={0: '代號', 5: '融資增減'})
+                df_m_twse['融資增減'] = df_m_twse['融資增減'].apply(clean_num)
+                has_margin = True
+    except Exception:
         pass
 
-    # 整理股價
     df_price_twse = pd.DataFrame(p_twse['data'], columns=p_twse['fields'])[['證券代號', '證券名稱', '收盤價', '漲跌價差']].rename(
         columns={'證券代號': '代號', '證券名稱': '名稱', '漲跌價差': '價差'}
     )
@@ -56,7 +73,6 @@ def fetch_twse_by_date(date_str):
     df_price_twse['昨收'] = df_price_twse['收盤價'] - df_price_twse['價差']
     df_price_twse['漲跌幅'] = ((df_price_twse['價差'] / df_price_twse['昨收']) * 100).round(2)
 
-    # 整理法人
     df_i_twse = pd.DataFrame(i_twse['data'], columns=i_twse['fields'])
     f_col = [c for c in df_i_twse.columns if '外資' in c and '買賣超' in c][0]
     t_col = [c for c in df_i_twse.columns if '投信' in c and '買賣超' in c][0]
@@ -64,7 +80,6 @@ def fetch_twse_by_date(date_str):
     df_i_twse['外資張數'] = (df_i_twse['外資張數'].apply(clean_num) / 1000).round(0)
     df_i_twse['投信張數'] = (df_i_twse['投信張數'].apply(clean_num) / 1000).round(0)
 
-    # 合併
     twse_all = df_price_twse.merge(df_i_twse, on='代號', how='inner')
     if has_margin:
         twse_all = twse_all.merge(df_m_twse, on='代號', how='left')
@@ -102,7 +117,6 @@ if __name__ == '__main__':
     tz_tw = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tz_tw)
 
-    # 若今天尚未公佈或休市，自動往回找最近 7 天內最新的一個交易日
     df_twse = None
     target_date_str = ""
     has_margin = False
@@ -118,6 +132,7 @@ if __name__ == '__main__':
             target_date_str = check_date.strftime('%Y-%m-%d')
             print(f"成功抓取到交易日數據：{target_date_str}")
             break
+        time.sleep(2)
 
     if df_twse is not None:
         status_suffix = " (完整結算)" if has_margin else " (外資/投信結算，資券結算中)"
@@ -161,5 +176,4 @@ if __name__ == '__main__':
             f.write(html)
         print("index.html 資料庫已成功更新！")
     else:
-        print("過去 7 天內均未抓到交易日數據。")
-        
+        print("未抓取到有效盤後數據。")
