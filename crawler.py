@@ -35,28 +35,34 @@ def get_daily_data(date_str):
         'Accept': 'application/json, text/javascript, */*; q=0.01'
     }
 
-    # 1. 上市收盤價
-    url_p = f'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?date={date_str}&response=json'
+    # 1. 上市最新收盤價 (STOCK_DAY_ALL 不帶 date 參數即為證交所庫存中最新結算日)
+    url_p = 'https://www.twse.com.tw/rwd/zh/afterTrading/STOCK_DAY_ALL?response=json'
     p_twse = safe_get_json(url_p, headers)
     if not p_twse or p_twse.get('stat') != 'OK':
-        print(f"[{date_str}] 股價資料未公佈或取得失敗")
+        print("股價資料取得失敗")
         return None
 
-    # 間隔 3 秒避免被 TWSE 判定為連續爬蟲
     time.sleep(3)
 
-    # 2. 上市三大法人
+    # 2. 上市三大法人 (T86 支援帶日期)
     url_i = f'https://www.twse.com.tw/rwd/zh/fund/T86?date={date_str}&selectType=ALL&response=json'
     i_twse = safe_get_json(url_i, headers)
     if not i_twse or i_twse.get('stat') != 'OK':
-        print(f"[{date_str}] 法人資料未公佈或取得失敗")
-        return None
+        # 若昨天查無，嘗試回退不帶日期抓最新一期法人
+        url_i_backup = 'https://www.twse.com.tw/rwd/zh/fund/T86?selectType=ALL&response=json'
+        i_twse = safe_get_json(url_i_backup, headers)
+        if not i_twse or i_twse.get('stat') != 'OK':
+            print("法人資料取得失敗")
+            return None
 
     time.sleep(3)
 
     # 3. 上市融資融券
     url_m = f'https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?date={date_str}&selectType=ALL&response=json'
     m_twse = safe_get_json(url_m, headers)
+    if not m_twse or m_twse.get('stat') != 'OK':
+        url_m_backup = 'https://www.twse.com.tw/rwd/zh/marginTrading/MI_MARGN?selectType=ALL&response=json'
+        m_twse = safe_get_json(url_m_backup, headers)
 
     # 建立上市價格表
     df_price_twse = pd.DataFrame(
@@ -139,7 +145,6 @@ if __name__ == '__main__':
     tz_tw = datetime.timezone(datetime.timedelta(hours=8))
     now_tw = datetime.datetime.now(tz_tw)
 
-    # 若在下午 15:30 以前執行，當天尚未結算，自動改抓前一天
     if now_tw.hour < 15 or (now_tw.hour == 15 and now_tw.minute < 30):
         target_date = now_tw - datetime.timedelta(days=1)
     else:
@@ -153,7 +158,7 @@ if __name__ == '__main__':
 
     if df_twse is not None:
         update_time_str = (
-            f"{date_display} 數據 [更新於 {now_tw.strftime('%m/%d %H:%M')}] (盤後完整結算)"
+            f"{date_display} 盤後完整結算 [更新於 {now_tw.strftime('%m/%d %H:%M')}]"
         )
         new_db = {
             'FOREIGN': {
