@@ -24,7 +24,6 @@ def get_market_data():
         'Accept': 'application/json, text/plain, */*'
     }
 
-    # 1. 抓取上市收盤行情 (OpenAPI)
     url_p = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
     print("正在請求證交所 OpenAPI 收盤行情...")
     p_data = []
@@ -33,16 +32,15 @@ def get_market_data():
         if res_p.status_code == 200:
             p_data = res_p.json()
     except Exception as e:
-        print(f"收盤行情連線異常: {e}")
+        print("收盤行情連線異常:", e)
 
     if not isinstance(p_data, list) or len(p_data) == 0:
         print("未取得有效的收盤行情數據")
         return None
 
-    print(f"成功取得收盤股價，共 {len(p_data)} 筆！")
+    print("成功取得收盤股價，共", len(p_data), "筆！")
     time.sleep(2)
 
-    # 2. 抓取三大法人買賣超 (具備雙端點容錯備援)
     inst_urls = [
         "https://openapi.twse.com.tw/v1/fund/T86",
         "https://www.twse.com.tw/rwd/zh/fund/T86?selectType=ALL&response=json"
@@ -52,7 +50,7 @@ def get_market_data():
     is_rwd_format = False
 
     for u in inst_urls:
-        print(f"正在請求三大法人數據: {u} ...")
+        print("正在請求三大法人數據:", u)
         try:
             res_i = requests.get(u, headers=headers, timeout=25)
             if res_i.status_code == 200 and res_i.text.strip().startswith(('{', '[')):
@@ -66,14 +64,13 @@ def get_market_data():
                     is_rwd_format = True
                     break
         except Exception as e:
-            print(f"該端點解析略過: {e}")
+            print("端點略過:", e)
         time.sleep(2)
 
     if not i_data:
         print("三大法人端點皆無回應，停止更新。")
         return None
 
-    # 整理股價資料
     df_p = pd.DataFrame(p_data)
     df_p = df_p[['Code', 'Name', 'ClosingPrice', 'Change']].rename(
         columns={'Code': '代號', 'Name': '名稱', 'ClosingPrice': '收盤價', 'Change': '價差'}
@@ -83,7 +80,6 @@ def get_market_data():
     df_p['昨收'] = df_p['收盤價'] - df_p['價差']
     df_p['漲跌幅'] = ((df_p['價差'] / df_p['昨收']) * 100).round(2)
 
-    # 整理法人資料
     if is_rwd_format:
         df_i = pd.DataFrame(i_data['data'], columns=i_data['fields'])
         f_col = [c for c in df_i.columns if '外資' in c and '買賣超' in c][0]
@@ -105,7 +101,6 @@ def get_market_data():
     df_inst['外資張數'] = (df_inst['外資張數'].apply(clean_num) / 1000).round(0)
     df_inst['投信張數'] = (df_inst['投信張數'].apply(clean_num) / 1000).round(0)
 
-    # 合併計算
     twse_all = df_p.merge(df_inst, on='代號', how='inner')
     twse_all = twse_all[~twse_all['代號'].apply(is_excluded)].copy()
 
@@ -123,10 +118,45 @@ def build_top20(df, sort_col, shares_col, is_asc=False):
         chg_prefix = '+' if r['漲跌幅'] > 0 else ''
         s_prefix = '+' if r[shares_col] > 0 else ''
         a_prefix = '+' if r[sort_col] > 0 else ''
+        
+        shares_val = int(r[shares_col])
+        shares_str = f"{shares_val:,}"
+        amount_str = f"{r[sort_col]:.2f}"
+        price_str = f"{r['收盤價']:,.1f}"
+        chg_str = f"{chg_prefix}{r['漲跌幅']:.2f}%"
+
         res.append({
             'r': idx,
             'c': str(r['代號']),
             'n': str(r['名稱']),
-            'p': f"{r['收盤價']:,.1f}",
-            'chg': f"{chg_prefix}{r['漲跌幅']:.2f}%",
-            's': f"{s_prefix}{int(r[shares_col]):
+            'p': price_str,
+            'chg': chg_str,
+            's': s_prefix + shares_str,
+            'a': a_prefix + amount_str,
+            'note': '官方盤後結算'
+        })
+    return res
+
+if __name__ == '__main__':
+    tz_tw = datetime.timezone(datetime.timedelta(hours=8))
+    now_tw = datetime.datetime.now(tz_tw)
+
+    df_twse = get_market_data()
+
+    if df_twse is not None and len(df_twse) > 0:
+        time_str = now_tw.strftime('%Y-%m-%d %H:%M')
+        update_time_str = f"最新結算盤後數據 [更新於 {time_str}]"
+        print("成功處理", len(df_twse), "檔個股籌碼資料！")
+
+        new_db = {
+            'FOREIGN': {
+                'TWSE': {
+                    'TOP': build_top20(df_twse[df_twse['外資金額'] > 0], '外資金額', '外資張數', False),
+                    'BOT': build_top20(df_twse[df_twse['外資金額'] < 0], '外資金額', '外資張數', True)
+                },
+                'TPEX': {'TOP': [], 'BOT': []}
+            },
+            'INST': {
+                'TWSE': {
+                    'TOP': build_top20(df_twse[df_twse['投信金額'] > 0], '投信金額', '投信張數', False),
+                    'BOT': build_top20(df
