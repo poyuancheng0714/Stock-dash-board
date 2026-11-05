@@ -97,4 +97,36 @@ def get_market_data():
         t_cols = [c for c in df_i.columns if 'InvestmentTrust' in c or '投信' in c]
         f_target = f_cols[0] if f_cols else df_i.columns[4]
         t_target = t_cols[0] if t_cols else df_i.columns[10]
-        code
+        code_col = 'Code' if 'Code' in df_i.columns else df_i.columns[0]
+        df_inst = df_i[[code_col, f_target, t_target]].rename(
+            columns={code_col: '代號', f_target: '外資張數', t_target: '投信張數'}
+        )
+
+    df_inst['外資張數'] = (df_inst['外資張數'].apply(clean_num) / 1000).round(0)
+    df_inst['投信張數'] = (df_inst['投信張數'].apply(clean_num) / 1000).round(0)
+
+    # 合併計算
+    twse_all = df_p.merge(df_inst, on='代號', how='inner')
+    twse_all = twse_all[~twse_all['代號'].apply(is_excluded)].copy()
+
+    twse_all['外資金額'] = (twse_all['外資張數'] * 1000 * twse_all['收盤價'] / 1e8).round(2)
+    twse_all['投信金額'] = (twse_all['投信張數'] * 1000 * twse_all['收盤價'] / 1e8).round(2)
+    twse_all['融資金額'] = 0.0
+    twse_all['融資增減'] = 0.0
+
+    return twse_all
+
+def build_top20(df, sort_col, shares_col, is_asc=False):
+    sub = df.sort_values(by=sort_col, ascending=is_asc).head(20)
+    res = []
+    for idx, (_, r) in enumerate(sub.iterrows(), 1):
+        chg_prefix = '+' if r['漲跌幅'] > 0 else ''
+        s_prefix = '+' if r[shares_col] > 0 else ''
+        a_prefix = '+' if r[sort_col] > 0 else ''
+        res.append({
+            'r': idx,
+            'c': str(r['代號']),
+            'n': str(r['名稱']),
+            'p': f"{r['收盤價']:,.1f}",
+            'chg': f"{chg_prefix}{r['漲跌幅']:.2f}%",
+            's': f"{s_prefix}{int(r[shares_col]):
