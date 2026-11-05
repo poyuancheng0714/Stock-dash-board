@@ -42,7 +42,7 @@ def get_market_data():
     print(f"成功取得收盤股價，共 {len(p_data)} 筆！")
     time.sleep(2)
 
-    # 2. 抓取三大法人買賣超 (具備雙網址容錯備援)
+    # 2. 抓取三大法人買賣超 (具備雙端點容錯備援)
     inst_urls = [
         "https://openapi.twse.com.tw/v1/fund/T86",
         "https://www.twse.com.tw/rwd/zh/fund/T86?selectType=ALL&response=json"
@@ -97,6 +97,4 @@ def get_market_data():
         t_cols = [c for c in df_i.columns if 'InvestmentTrust' in c or '投信' in c]
         f_target = f_cols[0] if f_cols else df_i.columns[4]
         t_target = t_cols[0] if t_cols else df_i.columns[10]
-        code_col = 'Code' if 'Code' in df_i.columns else df_i.columns[0]
-        df_inst = df_i[[code_col, f_target, t_target]].rename(
-            columns={code_col: '代
+        code
