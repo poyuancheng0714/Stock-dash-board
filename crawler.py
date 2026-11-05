@@ -23,7 +23,7 @@ def fetch_data():
     # 1. 股價 (OpenAPI)
     url_p = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
     try:
-        r_p = requests.get(url_p, headers=h, timeout=20)
+        r_p = requests.get(url_p, headers=h, timeout=25)
         p_list = r_p.json()
     except Exception as e:
         print("股價連線異常:", e)
@@ -34,7 +34,7 @@ def fetch_data():
 
     time.sleep(2)
 
-    # 2. 法人 (OpenAPI / RWD 備援)
+    # 2. 法人 (OpenAPI / RWD 雙來源)
     i_list = None
     is_rwd = False
     urls = [
@@ -43,7 +43,7 @@ def fetch_data():
     ]
     for u in urls:
         try:
-            r_i = requests.get(u, headers=h, timeout=20)
+            r_i = requests.get(u, headers=h, timeout=25)
             res = r_i.json()
             if isinstance(res, list) and len(res) > 0:
                 i_list = res
@@ -137,7 +137,21 @@ if __name__ == '__main__':
         t_top = make_list(df[df['投信金額'] > 0], '投信金額', '投信張數', False)
         t_bot = make_list(df[df['投信金額'] < 0], '投信金額', '投信張數', True)
 
+        empty_block = {'TOP': [], 'BOT': []}
         db = {
-            'FOREIGN': {'TWSE': {'TOP': f_top, 'BOT': f_bot}, 'TPEX': {'TOP': [], 'BOT': []}},
-            'INST': {'TWSE': {'TOP': t_top, 'BOT': t_bot}, 'TPEX': {'TOP': [], 'BOT': []}},
-            'MARGIN': {'TWSE': {'TOP': [], 'BOT': []}, 'TPEX': {'TOP': [], 'BOT':
+            'FOREIGN': {'TWSE': {'TOP': f_top, 'BOT': f_bot}, 'TPEX': empty_block},
+            'INST': {'TWSE': {'TOP': t_top, 'BOT': t_bot}, 'TPEX': empty_block},
+            'MARGIN': {'TWSE': empty_block, 'TPEX': empty_block}
+        }
+
+        with open('index.html', 'r', encoding='utf-8') as file:
+            c = file.read()
+
+        c = re.sub(r'<div class="time-badge">.*?</div>', '<div class="time-badge">' + badge + '</div>', c)
+        c = re.sub(r'const db = \{.*?\};', 'const db = ' + json.dumps(db, ensure_ascii=False) + ';', c)
+
+        with open('index.html', 'w', encoding='utf-8') as file:
+            file.write(c)
+        print("成功更新 index.html！")
+    else:
+        print("無法取得完整數據，保持原狀態。")
