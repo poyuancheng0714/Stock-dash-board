@@ -26,7 +26,7 @@ def fetch_data():
         r_p = requests.get(url_p, headers=h, timeout=20)
         p_list = r_p.json()
     except Exception as e:
-        print("股價請求失敗:", e)
+        print("股價連線異常:", e)
         return None
 
     if not isinstance(p_list, list) or len(p_list) == 0:
@@ -80,13 +80,13 @@ def fetch_data():
         f_col = [c for c in df_i.columns if 'Foreign' in c or '外資' in c][0]
         t_col = [c for c in df_i.columns if 'InvestmentTrust' in c or '投信' in c][0]
         c_col = 'Code' if 'Code' in df_i.columns else df_i.columns[0]
-        df_i = df_i[[c_col, f_target_or_col := f_col, t_col]].copy()
+        df_i = df_i[[c_col, f_col, t_col]].copy()
 
     df_i.columns = ['代號', '外資張數', '投信張數']
     df_i['外資張數'] = (df_i['外資張數'].apply(to_num) / 1000).round(0)
     df_i['投信張數'] = (df_i['投信張數'].apply(to_num) / 1000).round(0)
 
-    # 合併與計算
+    # 合併計算
     m = df_p.merge(df_i, on='代號', how='inner')
     m = m[m['代號'].apply(valid_code)].copy()
     m['外資金額'] = (m['外資張數'] * 1000 * m['收盤價'] / 1e8).round(2)
@@ -97,13 +97,47 @@ def make_list(df, s_col, n_col, asc=False):
     sub = df.sort_values(by=s_col, ascending=asc).head(20)
     out = []
     for i, (_, r) in enumerate(sub.iterrows(), 1):
-        s_sgn = '+' if r[n_col] > 0 else ''
-        a_sgn = '+' if r[s_col] > 0 else ''
-        c_sgn = '+' if r['漲跌幅'] > 0 else ''
-        out.append({
+        s_val = int(r[n_col])
+        a_val = float(r[s_col])
+        c_val = float(r['漲跌幅'])
+        p_val = float(r['收盤價'])
+
+        s_sgn = "+" if s_val > 0 else ""
+        a_sgn = "+" if a_val > 0 else ""
+        c_sgn = "+" if c_val > 0 else ""
+
+        str_s = s_sgn + "{:,}".format(s_val)
+        str_a = a_sgn + "{:.2f}".format(a_val)
+        str_p = "{:,.1f}".format(p_val)
+        str_c = c_sgn + "{:.2f}%".format(c_val)
+
+        item = {
             'r': i,
             'c': str(r['代號']),
             'n': str(r['名稱']),
-            'p': f"{r['收盤價']:,.1f}",
-            'chg': f"{c_sgn}{r['漲跌幅']:.2f}%",
-            's': f"{s_sgn}{int(r[n
+            'p': str_p,
+            'chg': str_c,
+            's': str_s,
+            'a': str_a,
+            'note': '官方盤後結算'
+        }
+        out.append(item)
+    return out
+
+if __name__ == '__main__':
+    now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    df = fetch_data()
+
+    if df is not None and len(df) > 0:
+        time_tag = now.strftime('%Y-%m-%d %H:%M')
+        badge = "最後更新時間：最新結算盤後數據 [更新於 " + time_tag + "]"
+        
+        f_top = make_list(df[df['外資金額'] > 0], '外資金額', '外資張數', False)
+        f_bot = make_list(df[df['外資金額'] < 0], '外資金額', '外資張數', True)
+        t_top = make_list(df[df['投信金額'] > 0], '投信金額', '投信張數', False)
+        t_bot = make_list(df[df['投信金額'] < 0], '投信金額', '投信張數', True)
+
+        db = {
+            'FOREIGN': {'TWSE': {'TOP': f_top, 'BOT': f_bot}, 'TPEX': {'TOP': [], 'BOT': []}},
+            'INST': {'TWSE': {'TOP': t_top, 'BOT': t_bot}, 'TPEX': {'TOP': [], 'BOT': []}},
+            'MARGIN': {'TWSE': {'TOP': [], 'BOT': []}, 'TPEX': {'TOP': [], 'BOT':
